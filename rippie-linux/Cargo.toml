@@ -1,0 +1,10 @@
+[package]
+name = "rippie-linux"
+description = "Writes the Wayland clipboard to a shared directory on every change"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }

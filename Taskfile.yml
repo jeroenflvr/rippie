@@ -1,0 +1,106 @@
+version: '3'
+
+vars:
+  BIN: '{{if eq OS "darwin"}}rippie-mac{{else}}rippie-linux{{end}}'
+
+tasks:
+  build:
+    desc: Release build of the binary for this OS
+    cmds:
+      - cargo build --release --locked -p {{.BIN}}
+
+  build:all:
+    desc: 'Release build of both packages: rippie-mac for this host, rippie-linux for LINUX_TARGET (default aarch64-unknown-linux-musl)'
+    vars:
+      LINUX_TARGET: '{{.LINUX_TARGET | default "aarch64-unknown-linux-musl"}}'
+    cmds:
+      - rustup target add {{.LINUX_TARGET}}
+      - cargo build --release --locked -p rippie-mac
+      # Pure-Rust static musl binary, so the bundled lld can link it without a cross toolchain.
+      - CARGO_TARGET_{{.LINUX_TARGET | upper | replace "-" "_"}}_LINKER=rust-lld cargo build --release --locked -p rippie-linux --target {{.LINUX_TARGET}}
+
+  dist:
+    desc: Build and package a binary for a target into dist/ (used by CI)
+    requires:
+      vars: [TARGET]
+    cmds:
+      - cargo build --release --locked -p {{.BIN}} --target {{.TARGET}}
+      - mkdir -p dist
+      - tar -C target/{{.TARGET}}/release -czf dist/{{.BIN}}-{{.TARGET}}.tar.gz {{.BIN}}
+
+  release:
+    desc: 'Tag and push; CI builds and publishes the GitHub release. Usage: task release VERSION=v0.1.0'
+    requires:
+      vars: [VERSION]
+    preconditions:
+      - sh: git diff --quiet && git diff --cached --quiet
+        msg: working tree is not clean
+    cmds:
+      - git tag -a {{.VERSION}} -m {{.VERSION}}
+      - git push origin {{.VERSION}}
+
+  deploy:
+    desc: 'Install and start as a service. Usage: task deploy DIR=/path/to/shared'
+    requires:
+      vars: [DIR]
+    cmds:
+      - task: build
+      - task: 'deploy:{{OS}}'
+        vars: { DIR: '{{.DIR}}' }
+
+  deploy:darwin:
+    internal: true
+    vars:
+      BIN_DIR: '{{.BIN_DIR | default "$HOME/.local/bin"}}'
+      PLIST: $HOME/Library/LaunchAgents/rippie.plist
+    cmds:
+      - mkdir -p "{{.BIN_DIR}}" "$HOME/Library/LaunchAgents"
+      - install -m 755 target/release/rippie-mac "{{.BIN_DIR}}/rippie-mac"
+      - |
+        cat > "{{.PLIST}}" <<EOF
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+          <key>Label</key><string>rippie</string>
+          <key>ProgramArguments</key>
+          <array>
+            <string>{{.BIN_DIR}}/rippie-mac</string>
+            <string>{{.DIR}}</string>
+          </array>
+          <key>RunAtLoad</key><true/>
+          <key>KeepAlive</key><true/>
+          <key>StandardErrorPath</key><string>/tmp/rippie.log</string>
+        </dict>
+        </plist>
+        EOF
+      - launchctl bootout gui/$(id -u)/rippie 2>/dev/null || true
+      - launchctl bootstrap gui/$(id -u) "{{.PLIST}}"
+
+  deploy:linux:
+    internal: true
+    vars:
+      # The service runs as this user and connects to their Wayland session socket.
+      RUN_USER: '{{.RUN_USER | default "$USER"}}'
+      WAYLAND_DISPLAY: '{{.WAYLAND_DISPLAY | default "wayland-0"}}'
+    cmds:
+      - sudo install -m 755 target/release/rippie-linux /usr/bin/rippie-linux
+      - |
+        sudo tee /etc/systemd/system/rippie.service >/dev/null <<EOF
+        [Unit]
+        Description=rippie clipboard bridge
+
+        [Service]
+        User={{.RUN_USER}}
+        Environment=XDG_RUNTIME_DIR=/run/user/$(id -u {{.RUN_USER}})
+        Environment=WAYLAND_DISPLAY={{.WAYLAND_DISPLAY}}
+        ExecStart=/usr/bin/rippie-linux {{.DIR}}
+        Restart=always
+        RestartSec=2
+
+        [Install]
+        WantedBy=multi-user.target
+        EOF
+      - sudo systemctl daemon-reload
+      - sudo systemctl enable rippie.service
+      - sudo systemctl restart rippie.service

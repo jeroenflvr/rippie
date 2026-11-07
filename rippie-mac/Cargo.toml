@@ -1,0 +1,11 @@
+[package]
+name = "rippie-mac"
+description = "Loads the clipboard file written by rippie-linux into the macOS clipboard"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSPasteboard"] }
